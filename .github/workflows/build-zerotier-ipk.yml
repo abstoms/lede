@@ -2,7 +2,7 @@ name: Build luci-app-zerotier for OpenWRT 23.05 (X86)
 on:
   push:
     branches: [ main ]  # 推送代码时自动触发
-  workflow_dispatch:  # 支持手动触发（在 GitHub 页面操作）
+  workflow_dispatch:  # 支持手动触发（在 GitHub 页面操作）1
 
 jobs:
   build:
