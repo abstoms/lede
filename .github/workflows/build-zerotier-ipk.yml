@@ -1,0 +1,75 @@
+name: Build luci-app-zerotier for OpenWRT 23.05 (X86)
+on:
+  push:
+    branches: [ main ]  # 推送代码时自动触发
+  workflow_dispatch:  # 支持手动触发（在 GitHub 页面操作）
+
+jobs:
+  build:
+    runs-on: ubuntu-latest  # 使用 Ubuntu 环境编译
+    env:
+      OPENWRT_VERSION: "23.05"  # 目标 OpenWRT 版本
+      TARGET_ARCH: "x86_64"     # X86 平台架构
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libncurses5-dev libncursesw5-dev \
+            zlib1g-dev gawk git gettext libssl-dev xsltproc \
+            wget unzip python3 python3-distutils file
+
+      - name: 克隆 OpenWRT 源码
+        run: |
+          # 克隆官方 OpenWRT 源码（指定 23.05 分支）
+          git clone --depth 1 -b openwrt-${{ env.OPENWRT_VERSION }} https://github.com/openwrt/openwrt.git openwrt
+          cd openwrt
+
+          # 替换软件源为国内镜像（加速下载）
+          sed -i 's#https://git.openwrt.org/feed/#https://github.com/openwrt/#g' feeds.conf.default
+          sed -i 's#https://git.openwrt.org/project/#https://github.com/openwrt/#g' feeds.conf.default
+
+      - name: 添加 luci-app-zerotier 插件源码
+        run: |
+          cd openwrt
+          # 从第三方仓库拉取插件（kenzok8 源包含该插件）
+          git clone --depth 1 https://github.com/kenzok8/openwrt-packages.git package/kenzok8
+          # 建立软链接，让编译系统识别插件
+          ln -s package/kenzok8/luci-app-zerotier package/luci-app-zerotier
+          ln -s package/kenzok8/zerotier package/zerotier  # 依赖的 zerotier 本体
+
+      - name: 更新并安装 feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a  # 更新软件源
+          ./scripts/feeds install -a  # 安装所有依赖
+
+      - name: 配置编译选项
+        run: |
+          cd openwrt
+          # 生成默认配置
+          make defconfig
+          # 配置仅编译 luci-app-zerotier 及其依赖为 .ipk（"m" 表示生成独立包）
+          echo "CONFIG_PACKAGE_luci-app-zerotier=m" >> .config
+          echo "CONFIG_PACKAGE_zerotier=m" >> .config  # 必须包含本体依赖
+          # 应用配置
+          make defconfig
+
+      - name: 编译插件（生成 .ipk）
+        run: |
+          cd openwrt
+          # 编译插件，-j 后面的数字为线程数（根据 CPU 核心数自动调整）
+          make package/luci-app-zerotier/compile V=s -j$(nproc)
+
+      - name: 上传编译结果
+        uses: actions/upload-artifact@v3
+        with:
+          name: luci-app-zerotier-${{ env.OPENWRT_VERSION }}-${{ env.TARGET_ARCH }}
+          # 指定 .ipk 文件路径（X86 平台输出目录）
+          path: |
+            openwrt/bin/packages/${{ env.TARGET_ARCH }}/base/luci-app-zerotier_*.ipk
+            openwrt/bin/packages/${{ env.TARGET_ARCH }}/base/zerotier_*.ipk
