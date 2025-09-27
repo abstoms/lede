@@ -10,57 +10,78 @@ jobs:
     env:
       OPENWRT_VERSION: "23.05"
       TARGET_ARCH: "x86_64"
+      PLUGIN_NAME: "luci-app-zerotier"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install dependencies (with cleanup)
         run: |
+          # 清理旧依赖，避免冲突
+          sudo apt-get autoremove -y
           sudo apt-get update
           sudo apt-get install -y \
             build-essential libncurses5-dev libncursesw5-dev \
             zlib1g-dev gawk git gettext libssl-dev xsltproc \
             wget unzip python3 python3-distutils file
 
-      - name: Clone OpenWRT source
+      - name: Clone OpenWRT source (with depth)
         run: |
+          # 克隆源码并指定具体版本（避免分支变动导致的兼容性问题）
           git clone --depth 1 -b openwrt-${{ env.OPENWRT_VERSION }} https://github.com/openwrt/openwrt.git openwrt
           cd openwrt
+          # 查看当前源码版本（便于排查）
+          git rev-parse HEAD
+          # 替换为国内源，确保 feeds 正常更新
           sed -i 's#https://git.openwrt.org/feed/#https://github.com/openwrt/#g' feeds.conf.default
           sed -i 's#https://git.openwrt.org/project/#https://github.com/openwrt/#g' feeds.conf.default
 
-      - name: Add luci-app-zerotier source
+      - name: Add plugin source (with verification)
         run: |
           cd openwrt
-          git clone --depth 1 https://github.com/kenzok8/openwrt-packages.git package/kenzok8
-          ln -s package/kenzok8/luci-app-zerotier package/luci-app-zerotier
+          # 拉取 kenzok8 仓库（指定稳定分支，避免最新代码冲突）
+          git clone --depth 1 -b master https://github.com/kenzok8/openwrt-packages.git package/kenzok8
+          # 验证插件文件是否存在（关键：避免路径错误导致的编译失败）
+          if [ ! -f "package/kenzok8/${{ env.PLUGIN_NAME }}/Makefile" ]; then
+            echo "Error: ${{ env.PLUGIN_NAME }} source not found!"
+            exit 1
+          fi
+          # 建立软链接
+          ln -s package/kenzok8/${{ env.PLUGIN_NAME }} package/${{ env.PLUGIN_NAME }}
           ln -s package/kenzok8/zerotier package/zerotier
 
-      - name: Update and install feeds
+      - name: Update feeds (with force)
         run: |
           cd openwrt
-          ./scripts/feeds update -a
+          # 强制更新 feeds，解决依赖缓存问题
+          ./scripts/feeds clean
+          ./scripts/feeds update -f -a
           ./scripts/feeds install -a
 
-      - name: Configure build options
+      - name: Configure build (minimal options)
         run: |
           cd openwrt
+          # 生成最小配置，仅保留必要组件
           make defconfig
-          echo "CONFIG_PACKAGE_luci-app-zerotier=m" >> .config
+          # 明确指定插件和依赖为模块（避免与系统组件冲突）
+          echo "CONFIG_PACKAGE_${{ env.PLUGIN_NAME }}=m" >> .config
           echo "CONFIG_PACKAGE_zerotier=m" >> .config
+          # 禁用不必要的编译选项，减少资源占用
+          echo "CONFIG_BUILD_LOG=y" >> .config  # 生成详细日志，便于排查
           make defconfig
 
-      - name: Compile packages
+      - name: Compile with limited threads (avoid OOM)
         run: |
           cd openwrt
-          make package/luci-app-zerotier/compile V=s -j$(nproc)
+          # 限制线程数为 2（避免 GitHub 虚拟机内存不足）
+          make package/${{ env.PLUGIN_NAME }}/compile V=s -j2
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-zerotier-${{ env.OPENWRT_VERSION }}-${{ env.TARGET_ARCH }}
+          name: ${{ env.PLUGIN_NAME }}-${{ env.OPENWRT_VERSION }}-${{ env.TARGET_ARCH }}
           path: |
-            openwrt/bin/packages/${{ env.TARGET_ARCH }}/base/luci-app-zerotier_*.ipk
+            openwrt/bin/packages/${{ env.TARGET_ARCH }}/base/${{ env.PLUGIN_NAME }}_*.ipk
             openwrt/bin/packages/${{ env.TARGET_ARCH }}/base/zerotier_*.ipk
           retention-days: 30
